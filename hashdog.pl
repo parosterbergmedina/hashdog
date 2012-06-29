@@ -10,7 +10,13 @@ use Digest::MD5::File qw(file_md5_hex);
 use Digest::SHA;
 use String::CRC32;
 
-my $version='0.71';
+# [*] changelog
+# version 0.72
+# added code for handling archives of multiple archive types
+# added function for translating control characters to its hexadecimal value
+# cleaned up some of the code
+
+my $version='0.72';
 my ($volume,$directories,$basename) = File::Spec->splitpath($0);
 print "[*] $basename version: $version written by Par Osterberg Medina\n";
 
@@ -38,10 +44,10 @@ sub usage {
 
 # options and their default values
 my ($input,@archive_skip,$verbose,$debug);
+my ($md5sum_file,$md5sum_fullpath,$sha1sum_file,$sha1sum_fullpath,$rds_file,$rds_fullpath);
 my $tmp_folder=File::Spec->tmpdir();
 my $archive_bin="7z";
 my $min_filesize=1;
-my ($md5sum_file,$md5sum_fullpath,$sha1sum_file,$sha1sum_fullpath,$rds_file,$rds_fullpath);
 
 GetOptions(
 		"input|i=s"=>\$input,
@@ -70,7 +76,10 @@ my @output=`$archive_bin`;
 &d_print(@output);
 foreach my $line (@output){
 	chomp($line);
-	if ($line=~m/^7-Zip\s.*/){$archive_version=$line;}
+	if ($line=~m/^7-Zip\s.*/){
+		$archive_version=$line;
+		last;
+	}
 }
 if ($archive_version){print "[-] archive binary: $archive_version\n";}
 else {die "could not find version information for 7-Zip";}
@@ -80,7 +89,7 @@ my $random=int(rand(1000000)) + 100000;
 $tmp_folder=File::Spec->catfile("$tmp_folder","hd$random");
 print "[-] using tmp folder: $tmp_folder\n";
 
-# archive type to skip, PE, ELF
+# archive types to skip, PE, ELF
 @archive_skip=split(/,/,join(',',@archive_skip));
 
 # creating the files handles
@@ -105,7 +114,6 @@ elsif (-f "$input") {
 }
 else {die "the input file is not a file nor a directory: $input\n";}
 
-
 my $sec=time - $^T;        
 print "[+] done, finished in: " . int($sec/(24*60*60)) . " hours, " . ($sec/60)%60 . " minutes and " . $sec%60 . " seconds\n";
 
@@ -121,104 +129,113 @@ remove_tree($tmp_folder,{keep_root=>0});
 exit;
 
 sub recursive {
-	my ($dir,$filetype)=@_;
+        my ($dir,$filetype)=@_;
 
-	# cleaning up the temporary directory
-	if ($filetype=~m/^main/){remove_tree($tmp_folder,{keep_root=>1});}
+        # cleaning up the temporary directory
+        if ($filetype=~m/^main/){remove_tree($tmp_folder,{keep_root=>1});}
 
-	if (opendir(DIR,"$dir")){
-		foreach my $file (readdir DIR){
+        if (opendir(DIR,"$dir")){
+                foreach my $file (readdir DIR){
 
-			# we do not want to process files named '.' or '..'
+                        # we do not want to process files named '.' or '..'
                         next if ($file=~m/^(\.|\.\.)$/);
 
-			# get the full path to the file
+                        # get the full path to the file
                         $file=File::Spec->catfile("$dir","$file");
 
-			# we do not want to process symbolic links
+                        # we do not want to process symbolic links
                         next if (-l "$file");
 
                         # list the directory or process the file
                         if (-d "$file") {&recursive("$file",$filetype);}
                         elsif (-f "$file") {&process_file("$file",$filetype);}
-			else {print "error: $file\n";}
+                        else {print "error: $file\n";}
                 }
                 closedir DIR;
-	}
-	else {die "error opening directory '$dir': $!\n"}
-	return ();
+        }
+        else {die "error opening directory '$dir': $!\n"}
+        return ();
 }
 
 
 sub process_file {
 	my ($file_to_process,$filetype)=@_;
-	my $file_name_in_hashset="$file_to_process";
+	my $filename_fullpath=&remove_ctrl("$file_to_process");
 
-	# formating the name of the file to include in the hashset
-	my ($volume,$directories,$file,$file_name_short);
+	# getting the name of the file we are processing
+	my ($volume,$directories,$file,$filename_shortpath);
 	if ($filetype eq "main_single"){
-		($volume,$directories,$file_name_in_hashset)=File::Spec->splitpath($file_to_process);
+		($volume,$directories,$filename_fullpath)=File::Spec->splitpath($file_to_process);
 	}
 	elsif ($filetype eq "main_multi"){
-		$file_name_in_hashset=~s/^\Q$input\E(.*)/$1/i;
+		$filename_fullpath=~s/^\Q$input\E(.*)/$1/i;
 	}
 	elsif ($filetype eq "extracted"){
 		($volume,$directories,$file)=File::Spec->splitpath($tmp_folder);
 		my $substitute=catfile("$directories","$file");
 		chomp ($substitute);
-		$file_name_in_hashset=~s/^\Q$substitute\E(.*)/$1/;
+		$filename_fullpath=~s/^\Q$substitute\E(.*)/$1/;
 	}
-	else {die "could not extract file name to use in hashset: $file_name_in_hashset\n";}
-	($volume,$directories,$file_name_short)=File::Spec->splitpath($file_name_in_hashset);
-	$file_name_in_hashset=~s/^[\/|\\]//; # remove the first (back)slash
-	print "[+] $file_name_in_hashset\n";
+	else {die "could not extract file name to use in hashset: $filename_fullpath\n";}
+	($volume,$directories,$filename_shortpath)=File::Spec->splitpath($filename_fullpath);
+
+	# formating the name of the file
+	$filename_fullpath=~s/^[\/|\\]//; # remove the first (back)slash
+	print "[+] $filename_fullpath\n";
 	&v_print ("[-] path: \"$file_to_process\"\n");
-	&v_print ("[-] name: $file_name_short\n");
+	&v_print ("[-] name: $filename_shortpath\n");
 
 	# getting the file size
 	my $filesize= -s $file_to_process;
 	&v_print ("[-] type: $filetype\n");
 	&v_print ("[-] size:$filesize\n");
 
-	# look for zero file size
+	# generate checksums files above the mimimum allowed file size
 	if ($filesize >= $min_filesize){
 
 		my ($md5sum,$sha1sum,$crc32sum);
 
 		if ($md5sum_file){
-			my $file_name=$file_name_short;
-			if ($md5sum_fullpath){$file_name=$file_name_in_hashset;}
+			my $filename_in_hashset=$filename_shortpath;
+			if ($md5sum_fullpath){$filename_in_hashset=$filename_fullpath;}
 			if (!$md5sum){$md5sum=&get_digest($file_to_process,'md5');}
-			print $md5sum_fh "$md5sum  $file_name\n";
+			print $md5sum_fh "$md5sum  $filename_in_hashset\n";
 		}
 
 		if ($sha1sum_file){
-			my $file_name=$file_name_short;
-			if ($sha1sum_fullpath){$file_name=$file_name_in_hashset;}
+			my $filename_in_hashset=$filename_shortpath;
+			if ($sha1sum_fullpath){$filename_in_hashset=$filename_fullpath;}
 			if (!$sha1sum){$sha1sum=&get_digest($file_to_process,'sha1');}
-			print $sha1sum_fh "$sha1sum  $file_name\n";
+			print $sha1sum_fh "$sha1sum  $filename_in_hashset\n";
 		}
 
 		# create a RDS compatible hashset
 		if ($rds_file){
-			my $file_name=$file_name_short;
-			if ($rds_fullpath){$file_name=$file_name_in_hashset;}
+			my $filename_in_hashset=$filename_shortpath;
+			if ($rds_fullpath){$filename_in_hashset=$filename_fullpath;}
 			if (!$md5sum){$md5sum=&get_digest($file_to_process,'md5');}
 			if (!$sha1sum){$sha1sum=&get_digest($file_to_process,'sha1');}
 			if (!$crc32sum){$crc32sum=&get_digest($file_to_process,'crc32');}
-			print $rds_fh "\"$sha1sum\",\"$md5sum\",\"$crc32sum\",\"$file_name\",$filesize,0,\"WIN\",\"\"\n";
+			print $rds_fh "\"$sha1sum\",\"$md5sum\",\"$crc32sum\",\"$filename_in_hashset\",$filesize,0,\"WIN\",\"\"\n";
 		}
 	}
 	else {&v_print ("[-] file \($filesize bytes\) is less than $min_filesize bytes\n");}
+
+	# checking to see if the file is an archive
 	&d_print ("[-] 7-Zip cmd: $archive_bin l \"$file_to_process\"");
 	my @output=`$archive_bin l \"$file_to_process\"`;
 	&d_print(@output);
+	my ($archive_type);
         foreach my $line (@output){
      		chomp($line);
-
 		# the file is an archive if we find an archive type
-		if ($line=~m/^Type\s=\s(.*)/){
-			my $archive_type=$1;
+		if ($line=~m/^Type\s=\s(.*)/){ 
+			$archive_type.=$1;
+		}
+	}
+
+	# process the file as an archive
+	if ($archive_type){
 
 			# PE files, try to unpack using the file
 			if ($archive_type=~m/^PE$/){
@@ -226,7 +243,7 @@ sub process_file {
 			}
 
 			foreach my $skip (@archive_skip){
-				if ($archive_type=~m/$skip/i){
+				if ($archive_type=~m/^$skip$/i){
 					&v_print("[-] skipping archive type: $archive_type\n");
 					return ();
 				}
@@ -240,7 +257,7 @@ sub process_file {
 			}
 
 			# making directory that will hold the content of the archive
-			my $archive_output=catfile("$tmp_folder","$file_name_in_hashset");
+			my $archive_output=catfile("$tmp_folder","$filename_fullpath");
 			my ($volume,$directories,$file) = File::Spec->splitpath($archive_output);
 			$archive_output=catfile("$directories","$file");
 			# if we have a volume, use the "\\?\" prefix to specify extended-length path
@@ -271,7 +288,6 @@ sub process_file {
 			# processing the extracted archive
 			&recursive($archive_output,"extracted");
 			return ();
-		}	
 	}
 	&v_print("[-] archive: not an archive\n");
 	return ();
@@ -287,8 +303,9 @@ sub v_print {
 sub d_print {
 	my (@input)=@_;
 	if ($debug){
-		foreach my $line (@input){print "$line";}
-		print "\n";
+		foreach my $line (@input){
+			chomp ($line);
+			print "$line\n";}
 	}
 	return ();
 }
@@ -306,5 +323,19 @@ sub get_digest {
 	&v_print("[-] $type: $digest\n");
 	if (!$digest){die "failed to produce $type digest for $file: $!\n";}
         return ($digest);
+}
+
+sub remove_ctrl {
+        my ($string)=@_;
+        my ($safe);
+        my @chars=split(//,$string);
+        foreach my $char (@chars){
+                if ($char=~m/[\x00-\x1F]/){
+                        my $hex=unpack('C*', $char);
+                        $char=sprintf("\\x%02x",$hex);
+                }
+                $safe.="$char";
+        }
+return ($safe);
 }
 
