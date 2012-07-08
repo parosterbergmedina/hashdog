@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 use strict;
-#use warnings;
+use warnings;
 use Getopt::Long;
 use File::Copy;
 use File::Find;
@@ -9,6 +9,11 @@ use File::Path qw(make_path remove_tree);
 use Digest::MD5::File qw(file_md5_hex);
 use Digest::SHA;
 use String::CRC32;
+use Pod::Usage;
+
+=pod
+
+=begin changelog
 
 # [*] changelog
 # version 0.72
@@ -16,34 +21,99 @@ use String::CRC32;
 # added function for translating control characters to its hexadecimal value
 # cleaned up some of the code
 
+=end changelog
+
+=cut
+
 my $version='0.72';
 my ($volume,$directories,$basename) = File::Spec->splitpath($0);
 print "[*] $basename version: $version written by Par Osterberg Medina\n";
 
-sub usage {
-        my ($error_msg)=@_;
+=pod
 
-        if ($error_msg){print "$error_msg\n";}
-        print "usage: $basename [--input] [--md5sum-file\|--sha1sum-file\|--rds-file] \{options\}\n";
-	print "\n";
-        print "\t--input\|-i {file\/dir}\t file or directory to process\n";
-        print "\t--md5sum-file {file}\t generate a file with md5 checksums\n";
-        print "\t--md5sum-fullpath \t use full file paths in the file with md5 checksums\n";
-        print "\t--sha1sum-file {file}\t generate a file with sha-1 checksums\n";
-        print "\t--sha1sum-fullpath \t use full file paths in the file with sha-1 checksums\n";
-        print "\t--rds-file {file}\t generate a file with checksums using the RDS format\n";
-        print "\t--rds-fullpath \t\t use full file paths in the RDS file\n";
-        print "\t--archive-bin {file}\t path to the 7-Zip binary\n";
-        print "\t--archive-skip {list} \t comma sperated list of archive types to not expand\n";
-        print "\t--min-filesize {number}\t minimun filesize in bytes to process\n";
-        print "\t--tmp \t\t\t specify the the tmp folder to use\n";
-        print "\t--verbose\|-v \t\t verbose output\n";
-        print "\t--debug\|-d \t\t turn on debug output\n";
-        exit;
-}
+=head1 NAME
+
+hashdog - manage hash databases
+
+=head1 SYNOPSIS
+
+hashdog [options] [file ...]
+
+ Options:
+   --help              brief help message
+   --man               full documentation
+   --input             file or directory to process
+
+  Supported hash formats: md5, sha1sum, rds
+   --[hash]-file       generate a file with [hash] checksums
+   --[hash]-fullpath   use full file paths in the file with [hash] checksums
+
+For more options, see --help or --man.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--input>
+
+Input file or directory to process.
+
+=item B<--md5sum-file>, B<--sha1sum-file>, B<--rds-file>
+
+Generate a file with the selected hash/checksum format
+
+=item B<--md5sum-fullpath>, B<--sha1sum-fullpath>, B<--rds-fullpath>
+
+Use full file paths in the output hash file
+
+=item B<--archive-bin>
+
+Path to the 7zip archive executable
+
+=item B<--archive-skip>
+
+A comma separated list of archive types not to uncompress
+
+=item B<--min-filesize>
+
+The minimum size of a file (in bytes) to process
+
+=item B<--tmp>
+
+Specify the path to a temporary working directory
+
+=item B<--verbose>
+
+Enable verbose output
+
+=item B<--debug>
+
+Enable debuging output
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<hashdog> will manage hash databases in a variety of hash and output formats.
+
+=head1 AUTHOR
+
+Par Osterberg Medina <https://github.com/parosterbergmedina/hashdog>
+
+Richard Harman <https://github.com/warewolf/hashdog>
+
+=cut
 
 # options and their default values
-my ($input,@archive_skip,$verbose,$debug);
+my ($input,@archive_skip,$verbose,$debug,$help,$man);
 my ($md5sum_file,$md5sum_fullpath,$sha1sum_file,$sha1sum_fullpath,$rds_file,$rds_fullpath);
 my $tmp_folder=File::Spec->tmpdir();
 my $archive_bin="7z";
@@ -63,17 +133,24 @@ GetOptions(
 		"tmp=s"=>\$tmp_folder,
 		"verbose|v"=>\$verbose,
 		"debug|d"=>\$debug,
-		);
+		"help"=>\$help,
+		"man"=>\$man,
+	) or pod2usage(2);
+
+pod2usage(1)  if ($help);
+pod2usage(-verbose => 2)  if ($man);
 
 
 # check if we have all the options
-if (!$input){&usage("specify a file or directory to process with \'--input\'");}
+pod2usage(-msg  => "Fatal: specify a file or directory to process with --input", -exitval => 1, -verbose => 0) unless ($input);
 
-print "[-] minimum filesize to process: $min_filesize bytes\n";
+printf "[-] minimum filesize to process: %d byte%s\n",$min_filesize,$min_filesize>1?"s":"";
+
 # get the version of 7-Zip
 my ($archive_version);
 my @output=`$archive_bin`;
 &d_print(@output);
+
 foreach my $line (@output){
 	chomp($line);
 	if ($line=~m/^7-Zip\s.*/){
@@ -81,6 +158,7 @@ foreach my $line (@output){
 		last;
 	}
 }
+
 if ($archive_version){print "[-] archive binary: $archive_version\n";}
 else {die "could not find version information for 7-Zip";}
 
@@ -102,6 +180,8 @@ if ($rds_file){
 }
 
 # start processing a file or following a directory recursivly
+pod2usage(-msg  => "Fatal: --input is neither a file nor a directory", -exitval => 1, -verbose => 0) unless (-d $input or -f $input);
+
 if (-d "$input") {
 	my $filetype="main_multi";
 	print "[+] processing files recursivly from: $input\n";
@@ -112,7 +192,6 @@ elsif (-f "$input") {
 	print "[+] processing file: $input\n";
 	&process_file("$input",$filetype);
 }
-else {die "the input file is not a file nor a directory: $input\n";}
 
 my $sec=time - $^T;        
 print "[+] done, finished in: " . int($sec/(24*60*60)) . " hours, " . ($sec/60)%60 . " minutes and " . $sec%60 . " seconds\n";
@@ -134,7 +213,7 @@ sub recursive {
         # cleaning up the temporary directory
         if ($filetype=~m/^main/){remove_tree($tmp_folder,{keep_root=>1});}
 
-        if (opendir(DIR,"$dir")){
+        opendir(DIR,$dir) or die "Couldn't opendir $dir for reading! ($!)";
                 foreach my $file (readdir DIR){
 
                         # we do not want to process files named '.' or '..'
@@ -152,8 +231,6 @@ sub recursive {
                         else {print "error: $file\n";}
                 }
                 closedir DIR;
-        }
-        else {die "error opening directory '$dir': $!\n"}
         return ();
 }
 
@@ -316,12 +393,12 @@ sub get_digest {
 	if ($type eq 'md5'){$digest=file_md5_hex($file);}
 	elsif ($type eq 'sha1'){$digest=Digest::SHA->new(1)->addfile("$file")->hexdigest;}
 	elsif ($type eq 'crc32'){
-		open ($file_fh,"<", $file) || die "Couldn't open $file: $!\n";
+		open ($file_fh,"<", $file) || die "Couldn't open $file: $!";
 		$digest=sprintf("%08x",crc32(*$file_fh)); # change to capital X for UC
 		close($file_fh);
 	}
 	&v_print("[-] $type: $digest\n");
-	if (!$digest){die "failed to produce $type digest for $file: $!\n";}
+	if (!$digest){die "failed to produce $type digest for $file: $!";}
         return ($digest);
 }
 
